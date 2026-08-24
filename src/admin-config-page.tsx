@@ -232,6 +232,40 @@ const STYLE = /* css */ String.raw`
       .advanced-toggle {
         justify-self: start;
       }
+      .input-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .input-row > input {
+        flex: 1;
+        width: auto;
+      }
+      .model-fetch-btn {
+        white-space: nowrap;
+        padding: 11px 12px;
+      }
+      .model-chip-wrap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      .model-chip-max {
+        max-height: 132px;
+        overflow: auto;
+      }
+      .model-chip {
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        background: rgba(143, 91, 51, 0.08);
+        color: var(--accent);
+      }
+      .model-chip:hover {
+        background: rgba(143, 91, 51, 0.16);
+      }
       .helper.error {
         color: var(--danger);
       }
@@ -632,7 +666,20 @@ const SCRIPT = /* js */ String.raw`
           });
         }
         field.appendChild(label);
-        field.appendChild(control);
+        if (options.action) {
+          const row = document.createElement("div");
+          row.className = "input-row";
+          row.appendChild(control);
+          const action = createActionButton(
+            options.action.label,
+            options.action.className || "secondary",
+            () => options.action.onClick(control),
+          );
+          row.appendChild(action);
+          field.appendChild(row);
+        } else {
+          field.appendChild(control);
+        }
         if (options.helper) {
           const helper = document.createElement("div");
           helper.className = "helper";
@@ -640,6 +687,7 @@ const SCRIPT = /* js */ String.raw`
           field.appendChild(helper);
         }
         container.appendChild(field);
+        return field;
       }
 
       function bindAdvancedJsonField(container, model, index) {
@@ -745,6 +793,82 @@ const SCRIPT = /* js */ String.raw`
         const upstreamModel = model.model || "未填上游模型名";
         const baseUrl = model.base_url || "未填 base_url";
         return provider + " · " + upstreamModel + " · " + baseUrl;
+      }
+
+      function bindModelListField(grid, model) {
+        if (model._modelListState === "loading") {
+          const loading = document.createElement("div");
+          loading.className = "helper";
+          loading.textContent = "正在获取上游模型列表...";
+          grid.appendChild(loading);
+          return;
+        }
+        if (model._modelListError) {
+          const error = document.createElement("div");
+          error.className = "helper error";
+          error.textContent = model._modelListError;
+          grid.appendChild(error);
+          return;
+        }
+        if (model._modelList) {
+          const helper = document.createElement("div");
+          helper.className = "helper";
+          if (model._modelList.length === 0) {
+            helper.textContent = "上游未返回任何模型。";
+          } else {
+            const hint = document.createElement("div");
+            hint.textContent = "共 " + model._modelList.length + " 个，点击填入：";
+            helper.appendChild(hint);
+            const wrap = document.createElement("div");
+            wrap.className = "model-chip-wrap model-chip-max";
+            model._modelList.forEach((name) => {
+              const chip = document.createElement("button");
+              chip.type = "button";
+              chip.className = "model-chip";
+              chip.textContent = name;
+              chip.addEventListener("click", () => {
+                model.model = name;
+                markDirty(true);
+                pendingFocusTarget = "model-upstream-" + model._id;
+                renderAll({ preserveScroll: true, scrollToFocus: false });
+              });
+              wrap.appendChild(chip);
+            });
+            helper.appendChild(wrap);
+          }
+          grid.appendChild(helper);
+        }
+      }
+
+      async function fetchModelList(model) {
+        const baseUrl = (model.base_url || "").trim();
+        if (!baseUrl) {
+          model._modelList = undefined;
+          model._modelListState = "";
+          model._modelListError = "请先填写 base_url，再获取模型列表。";
+          renderAll({ preserveScroll: true });
+          return;
+        }
+        model._modelListState = "loading";
+        model._modelListError = "";
+        renderAll({ preserveScroll: true });
+        try {
+          const query =
+            "/admin/models?base_url=" +
+            encodeURIComponent(baseUrl) +
+            "&api_key=" +
+            encodeURIComponent(model.api_key || "");
+          const response = await fetch(query, { cache: "no-store" });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "获取模型列表失败");
+          model._modelList = Array.isArray(payload.models) ? payload.models : [];
+          model._modelListError = "";
+        } catch (error) {
+          model._modelList = undefined;
+          model._modelListError = error instanceof Error ? error.message : "获取模型列表失败";
+        }
+        model._modelListState = "";
+        renderAll({ preserveScroll: true });
       }
 
       function renderModels() {
@@ -855,11 +979,18 @@ const SCRIPT = /* js */ String.raw`
           bindField(grid, "model", {
             value: model.model,
             placeholder: "上游真实模型名",
+            attributes: { "data-focus-id": "model-upstream-" + model._id },
             onInput(value) {
               model.model = value;
               markDirty(true);
             },
+            action: {
+              label: "获取列表",
+              className: "secondary model-fetch-btn",
+              onClick: () => fetchModelList(model),
+            },
           });
+          bindModelListField(grid, model);
           bindField(grid, "api_key", {
             spanClass: "span-2",
             value: model.api_key,

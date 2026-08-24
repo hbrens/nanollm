@@ -1435,6 +1435,42 @@ app.get("/v1/models", (c) => {
   });
 });
 
+// Proxies GET /models to an upstream OpenAI-compatible endpoint using the
+// base_url / api_key currently typed into the admin form (not yet saved).
+app.get("/admin/models", async (c) => {
+  const baseUrl = (c.req.query("base_url") ?? "").trim();
+  const apiKey = c.req.query("api_key") ?? "";
+  if (!baseUrl) return c.json({ error: "缺少 base_url 参数" }, 400);
+
+  const base = baseUrl.replace(/\/+$/, "");
+  const headers: Record<string, string> = {};
+  const resolvedKey = apiKey.replace(/\$\{(\w+)\}/g, (_, name: string) => process.env[name] ?? "");
+  if (resolvedKey) headers.Authorization = `Bearer ${resolvedKey}`;
+
+  try {
+    const response = await fetch(`${base}/models`, { headers, signal: AbortSignal.timeout(8000) });
+    if (!response.ok) {
+      return c.json({ error: `上游返回 HTTP ${response.status}` }, 502);
+    }
+    const payload = (await response.json()) as { data?: unknown };
+    const models = Array.isArray(payload.data)
+      ? payload.data
+          .map((entry) => {
+            if (typeof entry === "string") return entry;
+            if (entry && typeof entry === "object") {
+              const id = (entry as { id?: unknown }).id;
+              return typeof id === "string" ? id : "";
+            }
+            return "";
+          })
+          .filter(Boolean)
+      : [];
+    return c.json({ models });
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "请求上游模型列表失败" }, 502);
+  }
+});
+
 app.post("/v1/chat/completions", createRoute("openai-chat"));
 app.post("/v1/responses", createRoute("openai-responses"));
 app.post("/v1/messages", createRoute("anthropic"));
